@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SECURE // SPEAK</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+
+    <style>
+        :root {
+            --bg-deep: #030508;
+            --neon-blue: #00f3ff;
+            --neon-purple: #bc13fe;
+            --neon-red: #ff2a2a;
+            --neon-amber: #f59e0b;
+            --neon-green: #00ff88;
+            --glass: rgba(10, 15, 25, 0.85);
+            --border: 1px solid rgba(0, 243, 255, 0.3);
+            --font-main: 'Rajdhani', sans-serif;
+            --font-code: 'JetBrains Mono', monospace;
+            --hs-border: rgba(255,255,255,0.1);
+        }
+
+        /* --- SECURITY & INTERACTION LAYER --- */
+        body {
+            -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; 
+            background-color: var(--bg-deep);
+            background-image: 
+                linear-gradient(rgba(0, 243, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 243, 255, 0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: #fff;
+            font-family: var(--font-main);
+            height: 100dvh;
+            width: 100vw;
+            margin: 0;
+            overflow: hidden;
+            display: flex; /* Changed to flex for the side panel[cite: 1] */
+            cursor: default; 
+        }
+
+        input {
+            -webkit-user-select: text !important; user-select: text !important;
+            cursor: text !important; pointer-events: auto !important;
+        }
+
+        button, .icon-btn { cursor: pointer !important; pointer-events: auto !important; }
+
+        img { -webkit-user-drag: none; user-select: none; pointer-events: auto; }
+
+        * { box-sizing: border-box; outline: none; -webkit-tap-highlight-color: transparent; }
+        .hidden { display: none !important; }
+        
+        .screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; z-index: 1;
+        }
+
+        /* LOGIN SCREEN */
+        #login-screen {
+            justify-content: center; align-items: center;
+            background: radial-gradient(circle at center, rgba(0,243,255,0.05) 0%, transparent 80%);
+            z-index: 100;
+        }
+        .cyber-card {
+            background: var(--glass); backdrop-filter: blur(15px);
+            border: var(--border); padding: 2.5rem; width: 90%; max-width: 400px;
+            text-align: center; box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+            position: relative; z-index: 101;
+        }
+        .cyber-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-blue), transparent);
+        }
+        .logo-text {
+            font-family: var(--font-code); font-size: 2rem; letter-spacing: -2px;
+            margin-bottom: 2rem; text-shadow: 0 0 15px var(--neon-blue);
+        }
+        .cyber-input {
+            width: 100%; background: rgba(0,0,0,0.6); border: 1px solid #444;
+            border-left: 3px solid var(--neon-blue); padding: 15px;
+            color: var(--neon-blue); font-family: var(--font-code); font-size: 1rem;
+            margin-bottom: 1rem; transition: 0.3s;
+        }
+        .cyber-input:focus { box-shadow: 0 0 20px rgba(0, 243, 255, 0.15); border-color: var(--neon-blue); }
+        .cyber-btn {
+            width: 100%; padding: 15px; background: rgba(0, 243, 255, 0.1);
+            border: 1px solid var(--neon-blue); color: var(--neon-blue);
+            font-family: var(--font-code); font-weight: bold; text-transform: uppercase;
+            letter-spacing: 2px; cursor: pointer; transition: 0.2s; margin-bottom: 10px;
+        }
+        .cyber-btn:hover { background: var(--neon-blue); color: #000; box-shadow: 0 0 25px var(--neon-blue); }
+        .cyber-btn.secondary { border-color: #555; color: #888; background: transparent; }
+        .cyber-btn.secondary:hover { border-color: #fff; color: #fff; background: rgba(255,255,255,0.05); }
+
+        #share-area {
+            background: rgba(0,0,0,0.8); border: 1px dashed #555; padding: 15px;
+            margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;
+        }
+        #share-link-text { color: var(--neon-purple); font-family: var(--font-code); font-size: 1.4rem; letter-spacing: 2px; }
+
+        /* CHAT LAYOUT */
+        #chat-screen { flex-direction: row; } /* Enabled for CN panel side-by-side[cite: 1] */
+
+        .chat-main { 
+            flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; 
+            position: relative;
+        }
+
+        .chat-header {
+            height: 70px; background: rgba(3, 5, 8, 0.95); border-bottom: var(--border);
+            display: flex; justify-content: space-between; align-items: center; padding: 0 20px;
+            z-index: 50;
+        }
+        .header-info { display: flex; align-items: center; gap: 20px; }
+        .info-block { display: flex; flex-direction: column; }
+        .info-label { font-size: 0.65rem; color: #666; font-family: var(--font-code); letter-spacing: 1px; }
+        .info-val { font-family: var(--font-code); font-weight: bold; }
+
+        .status-dot {
+            height: 10px; width: 10px; background: #333; border-radius: 50%;
+            display: inline-block; margin-right: 8px; transition: 0.3s;
+        }
+        .status-dot.active { background: var(--neon-blue); box-shadow: 0 0 10px var(--neon-blue); }
+
+        /* --- CN PANEL STYLING[cite: 1] --- */
+        #cn-panel {
+            width: 320px; flex-shrink: 0; height: 100%;
+            background: rgba(2, 4, 8, 0.97);
+            border-left: 1px solid rgba(0,243,255,0.15);
+            display: flex; flex-direction: column;
+            overflow: hidden; transition: width 0.25s ease;
+        }
+        #cn-panel.hidden { width: 0; border-left: none; }
+
+        .cn-header {
+            padding: 15px; border-bottom: 1px solid rgba(0,243,255,0.12);
+            font-family: var(--font-code); font-size: 0.7rem;
+            color: var(--neon-blue); letter-spacing: 2px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .cn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--neon-blue); box-shadow: 0 0 6px var(--neon-blue); }
+
+        .cn-panel-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+        .cn-section { border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; overflow: hidden; }
+        .cn-section-title {
+            padding: 6px 10px; font-family: var(--font-code); font-size: 0.6rem;
+            color: #555; background: rgba(255,255,255,0.02);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .cn-section-body { padding: 8px; }
+
+        .pkt-row { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .pkt-dir { font-family: var(--font-code); font-size: 0.55rem; padding: 2px 5px; border-radius: 2px; }
+        .pkt-out { background: rgba(0,243,255,0.1); color: var(--neon-blue); }
+        .pkt-in  { background: rgba(188,19,254,0.1); color: var(--neon-purple); }
+        .pkt-hex { font-family: var(--font-code); font-size: 0.55rem; color: #444; word-break: break-all; margin-top: 4px; }
+        .hex-key { color: var(--neon-amber); }
+
+        .hs-step { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; margin-bottom: 4px; }
+        .hs-num {
+            width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--hs-border);
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--font-code); font-size: 0.55rem;
+        }
+        .hs-label { font-family: var(--font-code); font-size: 0.65rem; color: #555; }
+        .hs-ms { font-family: var(--font-code); font-size: 0.55rem; color: #444; margin-left: auto; }
+
+        /* MESSAGES */
+        #messages { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .message {
+            max-width: 85%; padding: 12px 18px; position: relative; font-size: 1rem;
+            word-wrap: break-word; animation: fadeIn 0.3s ease; margin-top: 10px;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .message.sent {
+            align-self: flex-end; background: rgba(0, 243, 255, 0.05);
+            border: 1px solid rgba(0, 243, 255, 0.2); border-right: 3px solid var(--neon-blue);
+            color: #d0faff; border-radius: 12px 2px 12px 12px;
+        }
+        .message.received {
+            align-self: flex-start; background: rgba(188, 19, 254, 0.05);
+            border: 1px solid rgba(188, 19, 254, 0.2); border-left: 3px solid var(--neon-purple);
+            color: #f0d0ff; border-radius: 2px 12px 12px 12px;
+        }
+
+        .sender-name { font-family: var(--font-code); font-size: 0.7rem; position: absolute; top: -18px; opacity: 0.7; white-space: nowrap; }
+        .sent .sender-name { right: 0; color: var(--neon-blue); }
+        .received .sender-name { left: 0; color: var(--neon-purple); }
+
+        /* INPUT */
+        .input-area { background: #000; border-top: var(--border); padding: 15px; display: flex; align-items: center; gap: 10px; z-index: 50; }
+        .icon-btn { background: rgba(255,255,255,0.05); border: 1px solid #333; color: #888; width: 42px; height: 42px; border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        .icon-btn:hover { border-color: var(--neon-blue); color: var(--neon-blue); }
+        
+        #message-input { flex-grow: 1; background: transparent; border: none; color: #fff; font-family: var(--font-main); font-size: 1.1rem; padding: 0 10px; }
+        .send-btn { background: var(--neon-blue); color: #000; border: none; width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--neon-blue); }
+
+        /* MODAL */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); backdrop-filter: blur(20px); align-items: center; justify-content: center; }
+        .modal-active { display: flex !important; }
+        .modal-content { max-width: 90%; max-height: 90%; border: 2px solid var(--neon-blue); border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div id="login-screen" class="screen">
+        <div class="cyber-card">
+            <div class="logo-text"><i class="fas fa-shield-alt"></i> SECURE // SPEAK</div>
+            
+            <input type="text" id="username-input" class="cyber-input" placeholder="IDENTITY (Optional)" style="border-left-color: var(--neon-purple); color: var(--neon-purple);">
+            <button id="btn-create" class="cyber-btn"><i class="fas fa-plus-square"></i> INITIALIZE NEW ROOM</button>
+            
+            <div id="share-area" class="hidden">
+                <div style="text-align: left;">
+                    <span style="color:#666; font-size:0.7rem; display:block;">ACCESS CODE</span>
+                    <div id="share-link-text"></div>
+                </div>
+                <button class="icon-btn" id="btn-copy"><i class="fas fa-copy"></i></button>
+            </div>
+            
+            <div style="margin: 25px 0; color: #444;">--- OR CONNECT ---</div>
+            <input type="text" id="room-id" class="cyber-input" placeholder="ENTER ROOM ID...">
+            <button id="btn-join" class="cyber-btn secondary">ESTABLISH UPLINK <i class="fas fa-satellite-dish"></i></button>
+        </div>
+    </div>
+
+    <div id="chat-screen" class="screen hidden">
+        <div class="chat-main">
+            <div class="chat-header">
+                <div class="header-info">
+                    <div id="connection-dot" class="status-dot"></div>
+                    <div class="info-block">
+                        <div class="info-label">CHANNEL</div>
+                        <div id="display-room" class="info-val" style="color: var(--neon-blue);">...</div>
+                    </div>
+                    <div style="width:1px; height:30px; background:#333;"></div>
+                    <div class="info-block">
+                        <div class="info-label">IDENTITY</div>
+                        <div id="display-username" class="info-val" style="color: var(--neon-purple);">...</div>
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <!-- CN Toggle Button[cite: 1] -->
+                    <button id="toggle-cn-panel" class="icon-btn" title="Analysis Panel"><i class="fas fa-network-wired"></i> CN</button>
+                    <button onclick="location.reload()" class="icon-btn" style="border-color: #333; width: 35px; height: 35px;"><i class="fas fa-power-off"></i></button>
+                </div>
+            </div>
+            
+            <div id="status-text" style="position:absolute; top:75px; left:20px; font-size: 0.7rem; color: #555; font-family: var(--font-code); z-index:40;">WAITING FOR PEER...</div>
+            <div id="messages" style="padding-top: 40px;"></div>
+
+            <div class="input-area">
+                <button class="icon-btn" onclick="triggerImageUpload(false)"><i class="far fa-image"></i></button>
+                <button class="icon-btn" style="color:var(--neon-red);" onclick="triggerImageUpload(true)"><i class="fas fa-bomb"></i></button>
+                <button id="record-btn" class="icon-btn" onmousedown="startRecording(false)" onmouseup="stopRecording()"><i class="fas fa-microphone-alt"></i></button>
+                <input type="text" id="message-input" placeholder="Encrypting message..." autocomplete="off">
+                <button onclick="sendTextMessage()" class="send-btn"><i class="fas fa-paper-plane"></i></button>
+                <input type="file" id="image-input" accept="image/*" style="display: none;">
+            </div>
+        </div>
+
+        <!-- CN ANALYSIS PANEL[cite: 1] -->
+        <div id="cn-panel" class="hidden">
+            <div class="cn-header"><div class="cn-dot"></div> CN ANALYSIS PANEL</div>
+            <div class="cn-panel-body">
+                <div class="cn-section">
+                    <div class="cn-section-title">&#9632; Packet Inspector</div>
+                    <div class="cn-section-body" id="pkt-list"></div>
+                </div>
+                <div class="cn-section">
+                    <div class="cn-section-title">&#9632; Latency / RTT</div>
+                    <div class="cn-section-body" id="rtt-list"></div>
+                </div>
+                <div class="cn-section">
+                    <div class="cn-section-title">&#9632; Handshake Timeline</div>
+                    <div class="cn-section-body" id="hs-steps"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="image-modal" class="modal" onclick="closeModal()">
+        <img class="modal-content" id="full-image">
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
