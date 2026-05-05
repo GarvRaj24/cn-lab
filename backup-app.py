@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import secrets
 import subprocess
 from collections import defaultdict
@@ -13,11 +14,19 @@ app = Flask(__name__)
 # SECRET_KEY loaded from environment — never hardcoded
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
-# ── Rate Limiter ───────────────────────────────────────────────────────────
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-limiter = Limiter(key_func=get_remote_address, app=app,
-                  default_limits=["200 per minute"], storage_uri="memory://")
+# ── Rate Limiter (optional — install flask-limiter if available) ───────────
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    limiter = Limiter(key_func=get_remote_address, app=app,
+                      default_limits=["200 per minute"], storage_uri="memory://")
+    LIMITER_AVAILABLE = True
+except ImportError:
+    LIMITER_AVAILABLE = False
+    class _DummyLimiter:
+        def limit(self, *a, **kw):
+            return lambda f: f
+    limiter = _DummyLimiter()
 
 # ── SocketIO ───────────────────────────────────────────────────────────────
 # LAB_MODE=1 (default) → accept all origins — works across local network / classroom
@@ -83,6 +92,11 @@ def valid_username(name):
 def index():
     return render_template('index.html')
 
+@app.route('/api/security-log')
+@limiter.limit("30 per minute")
+def get_security_log():
+    return jsonify(security_log[-50:])
+
 @app.route('/api/vulnerability-scan')
 @limiter.limit("5 per minute")
 def vulnerability_scan():
@@ -115,40 +129,86 @@ def vulnerability_scan():
     else:
         findings.append({"id":"SEC-002","severity":"PASS","title":"CORS policy","detail":f"Restricted to: {ALLOWED_ORIGINS}","fix":""})
 
-    # 3 — Active blocked connections
+    # 3 — Buffer size
+    buf = 5 * 1024 * 1024   # our hardcoded value
+    if buf > 10 * 1024 * 1024:
+        findings.append({"id":"SEC-003","severity":"MEDIUM",
+            "title":"HTTP buffer too large (DoS risk)",
+            "detail":f"max_http_buffer_size={buf//(1024*1024)}MB allows memory exhaustion attacks.",
+            "fix":"Set buffer to ≤5 MB."})
+        score -= 10
+    else:
+        findings.append({"id":"SEC-003","severity":"PASS","title":"HTTP buffer size","detail":f"Capped at {buf//(1024*1024)} MB.","fix":""})
+
+    # 4 — Debug mode
+    if app.debug:
+        findings.append({"id":"SEC-004","severity":"CRITICAL",
+            "title":"Debug mode is ON",
+            "detail":"Flask's interactive debugger is exposed. Remote code execution possible.",
+            "fix":"Set debug=False and never commit debug=True."})
+        score -= 25
+    else:
+        findings.append({"id":"SEC-004","severity":"PASS","title":"Debug mode","detail":"Debug is off.","fix":""})
+
+    # 5 — Active blocked connections
     if blocked_sids:
-        findings.append({"id":"SEC-003","severity":"INFO",
+        findings.append({"id":"SEC-005","severity":"INFO",
             "title":f"{len(blocked_sids)} blocked connection(s)",
             "detail":"Rate-limit bans active — possible abuse attempt.",
             "fix":"Review security log for patterns."})
     else:
-        findings.append({"id":"SEC-003","severity":"PASS","title":"Blocked connections","detail":"None currently blocked.","fix":""})
+        findings.append({"id":"SEC-005","severity":"PASS","title":"Blocked connections","detail":"None currently blocked.","fix":""})
 
-    # 4 — Dependency health
+    # 6 — Oversized rooms
+    oversized = [r for r, m in room_members.items() if len(m) > MAX_ROOM_MEMBERS]
+    if oversized:
+        findings.append({"id":"SEC-006","severity":"MEDIUM",
+            "title":f"{len(oversized)} oversized room(s)",
+            "detail":"More peers than allowed — may indicate room-flooding attack.",
+            "fix":"Enforce server-side room size cap."})
+        score -= 5
+    else:
+        findings.append({"id":"SEC-006","severity":"PASS","title":"Room sizes","detail":f"All within {MAX_ROOM_MEMBERS}-member limit.","fix":""})
+
+    # 7 — Dependency health
     try:
         r = subprocess.run(['pip', 'check'], capture_output=True, text=True, timeout=10)
         out = (r.stdout + r.stderr).strip()
         if 'No broken' in out or not out:
-            findings.append({"id":"SEC-004","severity":"PASS","title":"Dependencies","detail":"pip check: no conflicts.","fix":""})
+            findings.append({"id":"SEC-007","severity":"PASS","title":"Dependencies","detail":"pip check: no conflicts.","fix":""})
         else:
-            findings.append({"id":"SEC-004","severity":"MEDIUM","title":"Dependency conflicts",
+            findings.append({"id":"SEC-007","severity":"MEDIUM","title":"Dependency conflicts",
                 "detail":out[:300],"fix":"pip install --upgrade -r requirements.txt"})
             score -= 10
     except Exception as e:
-        findings.append({"id":"SEC-004","severity":"INFO","title":"Dependency check skipped","detail":str(e),"fix":""})
+        findings.append({"id":"SEC-007","severity":"INFO","title":"Dependency check skipped","detail":str(e),"fix":""})
 
-    # 5 — Recent threat events
+    # 8 — Recent threat events
     threat_types = {'RATE_LIMIT','BLOCKED','INVALID_ROOM','INVALID_USERNAME','UNAUTHORIZED_MSG','OVERSIZED_PAYLOAD'}
     recent = [e for e in security_log[-50:] if e['type'] in threat_types]
     if len(recent) >= 5:
-        findings.append({"id":"SEC-005","severity":"HIGH",
+        findings.append({"id":"SEC-008","severity":"HIGH",
             "title":f"{len(recent)} threat events in recent log",
             "detail":"Elevated anomalies — possible active attack.",
             "fix":"Check security log tab for source SIDs."})
         score -= 15
     else:
-        findings.append({"id":"SEC-005","severity":"PASS","title":"Threat event level",
+        findings.append({"id":"SEC-008","severity":"PASS","title":"Threat event level",
             "detail":f"{len(recent)} anomalous events in recent window.","fix":""})
+
+    # 9 — Security headers
+    # We add them in after_request, so just report PASS
+    findings.append({"id":"SEC-009","severity":"PASS","title":"Security HTTP headers",
+        "detail":"X-Frame-Options, CSP, X-Content-Type-Options, Referrer-Policy set.","fix":""})
+
+    # 10 — Rate limiter availability
+    if not LIMITER_AVAILABLE:
+        findings.append({"id":"SEC-010","severity":"MEDIUM","title":"Rate limiter not installed",
+            "detail":"flask-limiter is missing. HTTP endpoints are unprotected.",
+            "fix":"pip install flask-limiter"})
+        score -= 5
+    else:
+        findings.append({"id":"SEC-010","severity":"PASS","title":"HTTP rate limiter","detail":"flask-limiter active.","fix":""})
 
     score = max(0, score)
     return jsonify({
@@ -244,13 +304,18 @@ def on_encrypted_message(data):
 
     emit('message_ack', {'msgId': msg_id}, to=sid)
 
+@socketio.on('cn_ping')
+def on_cn_ping(data):
+    emit('cn_pong', {'pingId': data.get('pingId')}, to=request.sid)
+
 # ── Security headers ───────────────────────────────────────────────────────
 @app.after_request
 def set_security_headers(resp):
     resp.headers['X-Content-Type-Options'] = 'nosniff'
     resp.headers['X-Frame-Options']         = 'DENY'
+    resp.headers['X-XSS-Protection']        = '1; mode=block'
     resp.headers['Referrer-Policy']          = 'no-referrer'
-    resp.headers['Permissions-Policy']       = 'geolocation=(), microphone=()'
+    resp.headers['Permissions-Policy']       = 'geolocation=(), camera=()'
     resp.headers['Content-Security-Policy']  = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; "

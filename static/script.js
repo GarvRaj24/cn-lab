@@ -8,11 +8,8 @@ let currentRecordingModeViewOnce = false;
 let myUsername = "Anonymous";
 let peerUsername = "Unknown";
 
-// ── CN Panel state ──
+// ── Security Analysis Panel state ──
 let msgIdCounter = 0;
-// pingMap: msgId -> { t0: performance.now() at send, type }
-// RTT is measured locally: sender emits ping timestamp, server echoes msgId back,
-// sender computes elapsed. NO cross-device clock comparison.
 let pingMap = {};
 let handshakeStart = null;  // performance.now() — local only
 let hsTimings = {};
@@ -29,14 +26,12 @@ let msgStatusMap = {};
 // ════════════════════════════════════════════
 // SECURITY ENFORCERS
 // ════════════════════════════════════════════
-document.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('keydown', (e) => {
-    if (e.keyCode === 123 || (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74))) { e.preventDefault(); return false; }
-    if (e.ctrlKey && e.keyCode === 85) { e.preventDefault(); return false; }
-    if (e.ctrlKey && (e.keyCode === 83 || e.keyCode === 80)) { e.preventDefault(); return false; }
-    if (e.ctrlKey && e.keyCode === 67 && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); alert("SECURE TERMINAL: COPY DISABLED"); }
-});
-document.addEventListener('dragstart', e => e.preventDefault());
+// ── Input sanitisation (client-side) ──
+// Note: real security is enforced server-side.
+// We sanitise here to give users immediate feedback only.
+function sanitiseInput(str) {
+    return str.replace(/[<>"';()]/g, '');
+}
 
 // ════════════════════════════════════════════
 // INIT
@@ -124,40 +119,6 @@ socket.on('receive_public_key', async (data) => {
         const myExportedKey = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
         socket.emit('signal_public_key', { room, key: myExportedKey, request_reply: false, username: myUsername });
     }
-
-    // Start ping loop once peer is connected
-    startPingLoop();
-});
-
-// ════════════════════════════════════════════
-// RTT PING/PONG — local-only timing, no clock skew
-// The sender records performance.now() before emit.
-// Server echoes the msgId back immediately.
-// Sender computes elapsed on receipt. Accurate to <1ms.
-// ════════════════════════════════════════════
-let pingInterval = null;
-
-function startPingLoop() {
-    if (pingInterval) return;
-    // Send one ping now, then every 8 seconds
-    sendPing();
-    pingInterval = setInterval(sendPing, 8000);
-}
-
-function sendPing() {
-    if (!peerPublicKey) return;
-    const pingId = 'ping_' + (++msgIdCounter);
-    const t0 = performance.now();
-    pingMap[pingId] = { t0, type: 'ping' };
-    socket.emit('cn_ping', { room, pingId });
-}
-
-socket.on('cn_pong', (data) => {
-    const rec = pingMap[data.pingId];
-    if (!rec) return;
-    const rtt = Math.round(performance.now() - rec.t0);
-    delete pingMap[data.pingId];
-    logRtt('LINK', rtt);
 });
 
 // ════════════════════════════════════════════
@@ -196,14 +157,10 @@ async function encryptAndSend(dataBuffer, type, isViewOnce = false) {
     } catch (err) { console.error("Encryption Error:", err); }
 }
 
-// Server echoes msgId so sender can compute RTT without cross-device clocks
+// Server echoes msgId so sender can compute delivery status
 socket.on('message_ack', (data) => {
     const key = 'msg_' + data.msgId;
-    const rec = pingMap[key];
-    if (!rec) return;
-    const rtt = Math.round(performance.now() - rec.t0);
     delete pingMap[key];
-    logRtt(rec.type, rtt);
 
     // Update delivery status to "delivered"
     const statusEl = msgStatusMap[data.msgId];
@@ -237,7 +194,7 @@ socket.on('receive_message', async (data) => {
 });
 
 // ════════════════════════════════════════════
-// CN PANEL HELPERS
+// SECURITY ANALYSIS PANEL HELPERS
 // ════════════════════════════════════════════
 function logPacket(dir, iv, data) {
     const list = document.getElementById('pkt-list');
@@ -279,28 +236,6 @@ function logPacket(dir, iv, data) {
 
     list.prepend(row);
     if (list.children.length > 12) list.lastChild.remove();
-}
-
-function logRtt(type, ms) {
-    const list = document.getElementById('rtt-list');
-    // Remove placeholder
-    const placeholder = list.querySelector('[data-placeholder]');
-    if (placeholder) placeholder.remove();
-
-    // Color thresholds
-    const color = ms < 60 ? 'var(--neon-green)' : ms < 150 ? 'var(--neon-amber)' : 'var(--neon-red)';
-    // Bar width: max 44px at 300ms
-    const barW = Math.min(44, Math.max(2, Math.round((ms / 300) * 44)));
-
-    const row = document.createElement('div');
-    row.className = 'rtt-row';
-    row.innerHTML = `
-        <span class="rtt-arr">›</span>
-        <span class="rtt-lbl">${type.toUpperCase()}</span>
-        <div class="rtt-bar-wrap"><div class="rtt-bar-in" style="width:${barW}px;background:${color};"></div></div>
-        <span class="rtt-num" style="color:${color};">${ms}ms</span>`;
-    list.prepend(row);
-    if (list.children.length > 8) list.lastChild.remove();
 }
 
 function updateHandshakeTimeline() {
@@ -628,6 +563,117 @@ function b642ab(base64) {
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes.buffer;
 }
+
+
+
+// ════════════════════════════════════════════
+// SECURITY MONITOR
+// ════════════════════════════════════════════
+
+// ── Live security event feed from server ──
+socket.on('security_event', (data) => {
+    const log = document.getElementById('sec-event-log');
+    if (!log) return;
+
+    const placeholder = log.querySelector('[data-placeholder]');
+    if (placeholder) placeholder.remove();
+
+    // Use local client time with ms precision (matches packet inspector format)
+    const now = new Date();
+    const localTs = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+    const typeClass = data.type.replace(/[^A-Z_]/g, '');
+    const row = document.createElement('div');
+    row.className = 'sev-row';
+    row.innerHTML = `
+        <span class="sev-ts">${localTs}</span>
+        <span class="sev-type ${typeClass}">${data.type}</span>
+        <span class="sev-detail">${data.sid} ${data.room !== '–' ? '· ' + data.room : ''} ${data.detail ? '· ' + data.detail : ''}</span>`;
+    log.prepend(row);
+    if (log.children.length > 20) log.lastChild.remove();
+
+    // Flash the CN panel toggle button if a threat is detected
+    const threatTypes = ['RATE_LIMIT','BLOCKED','INVALID_ROOM','INVALID_USERNAME','UNAUTHORIZED_MSG','OVERSIZED_PAYLOAD'];
+    if (threatTypes.includes(data.type)) {
+        const btn = document.getElementById('toggle-cn-panel');
+        if (btn) {
+            btn.style.borderColor = 'var(--neon-red)';
+            btn.style.color = 'var(--neon-red)';
+            setTimeout(() => { btn.style.borderColor = ''; btn.style.color = ''; }, 2000);
+        }
+    }
+});
+
+// ── Vulnerability Scanner ──
+async function runVulnScan() {
+    const btn = document.getElementById('scan-btn');
+    const result = document.getElementById('sec-scan-result');
+    if (!btn || !result) return;
+
+    btn.disabled = true;
+    btn.textContent = 'SCANNING...';
+    result.innerHTML = '<div style="font-family:var(--font-code);font-size:0.46rem;color:rgba(0,255,136,0.4);text-align:center;padding:10px 0;letter-spacing:2px;">RUNNING CHECKS...</div>';
+
+    try {
+        const resp = await fetch('/api/vulnerability-scan');
+        const data = await resp.json();
+
+        const scoreColor = data.score >= 90 ? 'var(--neon-green)'
+                         : data.score >= 75 ? '#7fff00'
+                         : data.score >= 60 ? 'var(--neon-amber)'
+                         : data.score >= 40 ? '#ff8c00'
+                         : 'var(--neon-red)';
+
+        const barColor = scoreColor;
+        const findings = data.findings || [];
+
+        // Count severities
+        const counts = {PASS:0, INFO:0, MEDIUM:0, HIGH:0, CRITICAL:0};
+        findings.forEach(f => { if (counts[f.severity] !== undefined) counts[f.severity]++; });
+
+        let html = `
+        <div class="sec-score-ring">
+            <div class="sec-grade ${data.grade}" style="color:${scoreColor};">${data.grade}</div>
+            <div class="sec-score-detail">
+                <div style="font-family:var(--font-code);font-size:0.52rem;color:rgba(255,255,255,0.5);">Score: <span style="color:${scoreColor};font-weight:700;">${data.score}/100</span></div>
+                <div class="sec-score-bar-wrap"><div class="sec-score-bar" style="width:${data.score}%;background:${barColor};"></div></div>
+                <div style="font-family:var(--font-code);font-size:0.38rem;color:#252530;margin-top:3px;">${data.scanned_at}</div>
+            </div>
+        </div>
+        <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">
+            ${counts.CRITICAL > 0 ? `<span class="sec-badge CRITICAL">${counts.CRITICAL} CRITICAL</span>` : ''}
+            ${counts.HIGH     > 0 ? `<span class="sec-badge HIGH">${counts.HIGH} HIGH</span>` : ''}
+            ${counts.MEDIUM   > 0 ? `<span class="sec-badge MEDIUM">${counts.MEDIUM} MEDIUM</span>` : ''}
+            ${counts.INFO     > 0 ? `<span class="sec-badge INFO">${counts.INFO} INFO</span>` : ''}
+            ${counts.PASS     > 0 ? `<span class="sec-badge PASS">${counts.PASS} PASS</span>` : ''}
+        </div>`;
+
+        // Show critical/high/medium first, then pass
+        const order = ['CRITICAL','HIGH','MEDIUM','INFO','PASS'];
+        const sorted = [...findings].sort((a,b) => order.indexOf(a.severity) - order.indexOf(b.severity));
+
+        sorted.forEach(f => {
+            html += `
+            <div class="sec-finding ${f.severity}">
+                <div class="sec-finding-hdr">
+                    <span class="sec-badge ${f.severity}">${f.severity}</span>
+                    <span class="sec-title">${f.id} — ${f.title}</span>
+                </div>
+                <div class="sec-detail">${f.detail}</div>
+                ${f.fix ? `<div class="sec-fix">Fix: ${f.fix}</div>` : ''}
+            </div>`;
+        });
+
+        result.innerHTML = html;
+    } catch (err) {
+        result.innerHTML = `<div style="font-family:var(--font-code);font-size:0.46rem;color:var(--neon-red);padding:6px;">SCAN FAILED: ${err.message}</div>`;
+    }
+
+    btn.disabled = false;
+    btn.textContent = '⬡ RUN VULNERABILITY SCAN';
+}
+
+window.runVulnScan = runVulnScan;
 
 // Global exports
 window.generateRoom = generateRoom; window.joinChat = joinChat; window.copyId = copyId;
